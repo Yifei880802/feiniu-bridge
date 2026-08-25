@@ -1,0 +1,9 @@
+services:
+  fnos-gateway:
+    build: .
+    container_name: fnos-gateway
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
