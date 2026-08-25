@@ -38,6 +38,7 @@
 - `docs/` — 过程文档（SSH 打通的排查与决策记录）
 - `skill/` — fnos-remote-ops 技能归档（Agent 远程操作 playbook），用途见 `skill/README.md`
 - `deploy.sh` — 把 `src/gateway.py` 同步到部署目录并热更新容器
+- `LICENSE` — MIT 许可证
 
 ## 部署关系
 
@@ -81,6 +82,13 @@ Host nas
 | `/` | GET | 健康检查，返回版本 |
 | `/api/{endpoint}` | POST | body JSON 转发为 `appcgi.{endpoint}` 到 fnOS ws，返回响应 JSON |
 | `/ssh-ws` | WS | 原始字节流 ↔ SSH TCP 桥接 |
+
+## 许可与声明
+
+- 本项目按 [MIT 许可证](LICENSE) 开源。
+- 本项目为个人独立项目，与飞牛 fnOS 官方无关联、未获官方背书；「飞牛」「fnOS」及相关标识的商标权归其权利人所有。
+- fnOS 接口协议基于对其接口行为的自行观察分析，仅供个人设备互操作参考；fnOS 更新可能随时导致接口变化而失效。
+- 软件按「现状」提供，无任何明示或暗示担保，使用风险自负。
 
 ## 变更日志
 

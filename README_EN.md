@@ -38,6 +38,7 @@ Office Mac
 - `docs/` — process notes (the SSH enablement investigation and decisions)
 - `skill/` — archive of the fnos-remote-ops skill (Agent remote-ops playbook); purpose in `skill/README.md`
 - `deploy.sh` — syncs `src/gateway.py` to the deploy dir and hot-updates the container
+- `LICENSE` — MIT license
 
 ## Deployment relationship
 
@@ -81,6 +82,13 @@ The gateway is built for direct agent invocation — the 2026-08-25 SSH enableme
 | `/` | GET | Health check, returns version |
 | `/api/{endpoint}` | POST | JSON body forwarded as `appcgi.{endpoint}` to fnOS ws; returns response JSON |
 | `/ssh-ws` | WS | Raw byte stream ↔ SSH TCP bridge |
+
+## License & disclaimer
+
+- Licensed under the [MIT License](LICENSE).
+- This is an independent personal project, not affiliated with or endorsed by fnOS; "fnOS" and related marks are trademarks of their respective owners.
+- The fnOS integration is based on my own observation of its interface behavior, for personal-device interoperability only; fnOS updates may break it at any time.
+- The software is provided "as is", without warranty of any kind; use at your own risk.
 
 ## Changelog
 
