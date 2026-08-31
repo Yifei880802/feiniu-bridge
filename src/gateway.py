@@ -1,22 +1,132 @@
 from fastapi import FastAPI, Request, HTTPException, WebSocket
+from fastapi.responses import StreamingResponse
 import websockets
+import httpx
 import json
 import asyncio
+import hmac
+import os
 import logging
-from typing import Dict, Any
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="fnOS API Gateway", version="1.1.0")
+app = FastAPI(title="fnOS API Gateway", version="1.1.1")
 
 SSH_HOST = "192.168.1.100"  # 占位示例：替换为你的 NAS 局域网 IP
 SSH_PORT = 22
 
+# ---- SAG MCP 代理配置 ----
+# 占位示例：替换为你的 SAG 知识库 API 地址（本机容器网络）
+SAG_API_BASE = "http://192.168.1.100:8000"
+# 访问令牌从环境变量注入（见 docker-compose.yml），未设置时禁用该代理
+SAG_MCP_TOKEN = os.environ.get("SAG_MCP_TOKEN", "")
+
+_sag_jwt: Optional[str] = None
+_sag_jwt_lock = asyncio.Lock()
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=15.0, read=300.0, write=30.0, pool=15.0)
+        )
+    return _http_client
+
+
+async def sag_login(client: httpx.AsyncClient) -> str:
+    # SAG 单用户登录取 JWT；用户名按你的实例修改
+    r = await client.post(f"{SAG_API_BASE}/api/v1/auth/login", json={"name": "your-sag-user"})
+    r.raise_for_status()
+    data = r.json()
+    token = data.get("access_token") or data.get("token")
+    if not token:
+        raise RuntimeError(f"SAG login unexpected keys: {list(data.keys())}")
+    return token
+
+
+async def get_sag_jwt(client: httpx.AsyncClient, force: bool = False) -> str:
+    global _sag_jwt
+    async with _sag_jwt_lock:
+        if _sag_jwt is None or force:
+            _sag_jwt = await sag_login(client)
+        return _sag_jwt
+
+
+def check_mcp_token(request: Request) -> None:
+    if not SAG_MCP_TOKEN:
+        raise HTTPException(status_code=503, detail="sag-mcp proxy disabled")
+    provided = request.headers.get("x-sag-token") or request.query_params.get("token", "")
+    if not provided or not hmac.compare_digest(provided, SAG_MCP_TOKEN):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+# 不透传的请求头（认证由网关注入，hop-by-hop 头无意义）
+_SKIP_REQ_HEADERS = {
+    "host", "authorization", "x-sag-token", "content-length",
+    "transfer-encoding", "connection", "keep-alive",
+}
+_SKIP_RESP_HEADERS = {"content-length", "transfer-encoding", "connection"}
+
+
+async def _proxy_sag_mcp(subpath: str, request: Request):
+    check_mcp_token(request)
+    target = f"{SAG_API_BASE}/mcp/{subpath}"
+    qs = [(k, v) for k, v in request.query_params.items() if k != "token"]
+    body = await request.body()
+
+    fwd_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _SKIP_REQ_HEADERS
+    }
+
+    client = get_http_client()
+    jwt = await get_sag_jwt(client)
+
+    upstream = None
+    for attempt in (1, 2):
+        fwd_headers["Authorization"] = f"Bearer {jwt}"
+        req = client.build_request(
+            request.method, target, params=qs, content=body, headers=fwd_headers
+        )
+        upstream = await client.send(req, stream=True)
+        if upstream.status_code == 401 and attempt == 1:
+            await upstream.aclose()
+            logger.info("sag-mcp: upstream 401, re-login and retry")
+            jwt = await get_sag_jwt(client, force=True)
+            continue
+        break
+
+    resp_headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in _SKIP_RESP_HEADERS
+    }
+
+    async def streamer():
+        try:
+            async for chunk in upstream.aiter_bytes(8192):
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    logger.info(f"sag-mcp: {request.method} /{subpath} -> {upstream.status_code}")
+    return StreamingResponse(
+        streamer(), status_code=upstream.status_code, headers=resp_headers
+    )
+
+
+@app.api_route("/sag-mcp", methods=["GET", "POST", "DELETE"])
+@app.api_route("/sag-mcp/{subpath:path}", methods=["GET", "POST", "DELETE"])
+async def sag_mcp_proxy(subpath: str, request: Request):
+    return await _proxy_sag_mcp(subpath, request)
+
 
 @app.get("/")
 async def root():
-    return {"service": "fnOS API Gateway", "status": "running", "version": "1.1.0"}
+    return {"service": "fnOS API Gateway", "status": "running", "version": "1.1.1"}
 
 
 @app.websocket("/ssh-ws")
@@ -80,7 +190,7 @@ async def proxy(endpoint: str, request: Request):
         logger.info(f"收到请求: endpoint={endpoint}, req_id={req_id}")
 
         ws_msg = {"req": f"appcgi.{endpoint}", "reqid": req_id, **body}
-        ws_url = "ws://192.168.1.100:5666/websocket?type=main"  # 占位示例：替换为你的 NAS 局域网 IP
+        ws_url = f"ws://{SSH_HOST}:5666/websocket?type=main"
 
         async with websockets.connect(ws_url) as ws:
             await ws.send(json.dumps(ws_msg))

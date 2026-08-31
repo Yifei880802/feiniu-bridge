@@ -7,3 +7,5 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      # 占位示例：替换为你自己生成的强随机值（如 openssl rand -hex 32）
+      - SAG_MCP_TOKEN=k7m9x2p_REPLACE_ME

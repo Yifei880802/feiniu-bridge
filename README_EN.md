@@ -2,10 +2,11 @@
 
 > 中文版: [README.md](README.md)
 
-A self-built gateway service for the fnOS NAS. It does two things:
+A self-built gateway service for the fnOS NAS. It does three things:
 
 1. **`/ssh-ws`**: a WebSocket → SSH (TCP 22) bridge. The fnOS built-in public reverse proxy is pure L7 with no TCP passthrough, so raw SSH cannot cross it; this endpoint wraps SSH in WebSocket so the office Mac can `ssh nas` key-authenticated from anywhere.
 2. **`/api/{endpoint}`**: an HTTP → fnOS WebSocket `appcgi.*` bridge (same protocol as trim-cli), letting external tools call fnOS capabilities.
+3. **`/sag-mcp/`** (v1.1.1): an authenticated MCP reverse proxy that exposes the LAN-side SAG knowledge base's Streamable HTTP MCP endpoint to the public internet. The gateway holds the knowledge-base JWT and requires an access token; combined with stateless HTTP transport, MCP clients self-recover after network blips instead of relying on the fragile long-lived WS + stdio tunnel.
 
 ## Sanitization notice
 
@@ -17,6 +18,8 @@ This archive is sanitized. All domains, IPs, usernames and hostnames below are *
 | `192.168.1.100` | The NAS's LAN IP | Your NAS's LAN IP |
 | `alice` | NAS login username | Your fnOS username |
 | `/vol2/<uid>/` | fnOS per-user directory path | Your actual user directory |
+| `k7m9x2p_REPLACE_ME` | `/sag-mcp/` access-token placeholder | Your own strong random value (`openssl rand -hex 32`) |
+| `your-sag-user` | SAG knowledge-base single username | Your knowledge-base username |
 
 The IPs in the source code are placeholders too — change them to your own NAS address before deploying.
 
@@ -28,14 +31,15 @@ Office Mac
        └─ Public edge: fnOS built-in L7 reverse proxy (443 TLS, WS-capable, no TCP passthrough)
             └─ fnos-gateway container (192.168.1.100:8081, uvicorn + FastAPI)
                  ├─ /ssh-ws ──asyncio TCP──▶ 192.168.1.100:22 (sshd)
-                 └─ /api/* ──websockets──▶ ws://192.168.1.100:5666 (fnOS appcgi)
+                 ├─ /api/* ──websockets──▶ ws://192.168.1.100:5666 (fnOS appcgi)
+                 └─ /sag-mcp/* ──httpx streaming reverse proxy──▶ http://192.168.1.100:8000/mcp/ (SAG knowledge base)
 ```
 
 ## Layout
 
-- `src/` — deployable source: `gateway.py` (v1.1.0), `Dockerfile`, `docker-compose.yml`
-- `backup/` — `gateway.py.bak-20260825` (v1.0.0 original, without /ssh-ws)
-- `docs/` — process notes (the SSH enablement investigation and decisions)
+- `src/` — deployable source: `gateway.py` (v1.1.1), `Dockerfile`, `docker-compose.yml`
+- `backup/` — `gateway.py.bak-20260825` (v1.0.0 original, without /ssh-ws), `gateway.py.bak-20260831` (v1.1.0 original, without /sag-mcp/)
+- `docs/` — process notes (the SSH enablement investigation; the MCP tunnel disconnect root-cause analysis and the HTTP self-healing proxy design)
 - `skill/` — archive of the fnos-remote-ops skill (Agent remote-ops playbook); purpose in `skill/README.md`
 - `deploy.sh` — syncs `src/gateway.py` to the deploy dir and hot-updates the container
 - `LICENSE` — MIT license
@@ -46,6 +50,7 @@ Office Mac
 - **This dir**: source archive and docs (source of truth)
 - **Update flow**: edit `src/gateway.py` → run `./deploy.sh` (cp to deploy dir + `docker cp` + `restart`).
   Note the image `COPY gateway.py` at build time — without `docker cp`, a recreated container reverts to the baked-in version; to update the image for good, run `docker compose build && up -d`.
+- **Dependency**: since v1.1.1 the image needs `httpx` (already in the `Dockerfile`). If you hot-update via `docker cp` + `restart` instead of rebuilding the image, run `pip install httpx` inside the container first; see the deployment notes in `docs/process-20260831.md`.
 
 ## Client setup (Mac)
 
@@ -67,6 +72,7 @@ Requires `brew install websocat`. Then just `ssh nas` (ed25519 key pushed, passw
 
 - Key-only login: `PasswordAuthentication no` and `KbdInteractiveAuthentication no` appended to `/etc/ssh/sshd_config.d/trim_sshd.conf`, applied via `systemctl reload ssh`
 - `/ssh-ws` itself is unauthenticated — the security boundary is sshd (pubkey). This is equivalent to exposing port 22's auth surface over WS; acceptable. To harden further, add a query-token check in the endpoint.
+- `/sag-mcp/` requires an access token (`X-SAG-Token` header or `?token=` query param, timing-safe compare); it returns 503 (disabled) when no token is configured. The knowledge-base JWT is held by the gateway and never leaves the LAN. uvicorn access logs are off so the token never lands in request-line logs. The token is the credential to the knowledge-base contents — do not leak it or write it to logs.
 
 ## Agent invocation
 
@@ -82,6 +88,7 @@ The gateway is built for direct agent invocation — the 2026-08-25 SSH enableme
 | `/` | GET | Health check, returns version |
 | `/api/{endpoint}` | POST | JSON body forwarded as `appcgi.{endpoint}` to fnOS ws; returns response JSON |
 | `/ssh-ws` | WS | Raw byte stream ↔ SSH TCP bridge |
+| `/sag-mcp/{subpath}` | GET/POST/DELETE | Token-gated MCP reverse proxy, streams to the knowledge base `/mcp/`, gateway injects the JWT |
 
 ## License & disclaimer
 
@@ -92,5 +99,6 @@ The gateway is built for direct agent invocation — the 2026-08-25 SSH enableme
 
 ## Changelog
 
+- **v1.1.1** (2026-08-31): added the `/sag-mcp/` MCP reverse-proxy endpoint (access token, gateway-injected knowledge-base JWT, streaming); image gains the `httpx` dependency and uvicorn access logs are turned off. Motivation: the long-lived MCP tunnel kept disconnecting, so it moved to stateless self-healing HTTP — see `docs/process-20260831.md`
 - **v1.1.0** (2026-08-25): added `/ssh-ws` SSH bridge endpoint
 - **v1.0.0** (2026-08-17): initial release, `/api` bridge
